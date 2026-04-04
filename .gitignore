@@ -1,0 +1,16 @@
+/build/
+/build-*/
+/plugins/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.lib
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+compile_commands.json
