@@ -19,11 +19,10 @@
 #include "cadence/cd_mcp_tool_state.h"
 #include "cadence/cd_kernel.h"
 #include "cadence/cd_kernel_api.h"
+#include "cadence/cd_scripting_api.h"
 #include "cadence/cd_scene.h"
 #include "cadence/cd_platform.h"
 #include "cadence/cd_memory.h"
-#include "cadence/cd_script_instance.h"
-#include "cadence/cd_script_reload.h"
 #include "cJSON.h"
 
 #include <stdio.h>
@@ -32,43 +31,19 @@
 #include <time.h>
 
 /* ============================================================================
- * Script manager and reload watcher pointers.
- *
- * PB-3: Moved from static globals into cd_kernel_get_mcp_tool_state(kernel)->script.
- * The set/get functions still use a module-level pointer as a fallback
- * for callers that don't have a kernel reference (plugin init).
+ * Scripting API access — all calls go through the vtable registered by
+ * the scripting_lua plugin.  Returns NULL if plugin is not loaded.
  * ============================================================================ */
 
-static cd_script_mgr_t*    s_fallback_script_mgr    = NULL;
-static cd_script_reload_t* s_fallback_script_reload  = NULL;
-
-void cd_mcp_script_tools_set_mgr(void* mgr) {
-    s_fallback_script_mgr = (cd_script_mgr_t*)mgr;
+static const cd_scripting_api_t* get_scripting_api(struct cd_kernel_t* kernel) {
+    return kernel ? cd_kernel_get_scripting_api(kernel) : NULL;
 }
 
-void cd_mcp_script_tools_set_reload(void* reload) {
-    s_fallback_script_reload = (cd_script_reload_t*)reload;
-}
-
-void* cd_mcp_script_tools_get_mgr(void) {
-    return (void*)s_fallback_script_mgr;
-}
-
-/** Get the script manager, preferring kernel tool state if available. */
-static cd_script_mgr_t* get_script_mgr(struct cd_kernel_t* kernel) {
-    if (kernel && cd_kernel_get_mcp_tool_state(kernel) && cd_kernel_get_mcp_tool_state(kernel)->script.script_mgr) {
-        return cd_kernel_get_mcp_tool_state(kernel)->script.script_mgr;
-    }
-    return s_fallback_script_mgr;
-}
-
-/** Get the script reload watcher, preferring kernel tool state if available. */
-static cd_script_reload_t* get_script_reload(struct cd_kernel_t* kernel) {
-    if (kernel && cd_kernel_get_mcp_tool_state(kernel) && cd_kernel_get_mcp_tool_state(kernel)->script.script_reload) {
-        return cd_kernel_get_mcp_tool_state(kernel)->script.script_reload;
-    }
-    return s_fallback_script_reload;
-}
+/* Legacy setters — kept as no-ops so callers that still call them don't
+ * crash.  The vtable replaces the need for stashed pointers. */
+void cd_mcp_script_tools_set_mgr(void* mgr)     { (void)mgr; }
+void cd_mcp_script_tools_set_reload(void* reload) { (void)reload; }
+void* cd_mcp_script_tools_get_mgr(void)           { return NULL; }
 
 /* ============================================================================
  * Internal: Format a cd_id_t as "index:generation" string
@@ -466,13 +441,6 @@ static cJSON* cd_mcp_handle_script_attach(
         return NULL;
     }
 
-    /* Check script manager is available */
-    if (get_script_mgr(kernel) == NULL) {
-        *error_code = CD_JSONRPC_INTERNAL_ERROR;
-        *error_msg  = "Script manager not available";
-        return NULL;
-    }
-
     /* Extract "id" (required) - node ID */
     const cJSON* id_item = cJSON_GetObjectItemCaseSensitive(params, "id");
     if (id_item == NULL || !cJSON_IsString(id_item) ||
@@ -516,8 +484,15 @@ static cJSON* cd_mcp_handle_script_attach(
         if (file_path[i] == '\\') file_path[i] = '/';
     }
 
-    /* Attach the script */
-    cd_id_t instance_id = cd_script_mgr_attach(get_script_mgr(kernel), node_id, file_path);
+    /* Attach the script via scripting API vtable */
+    const cd_scripting_api_t* sapi = get_scripting_api(kernel);
+    if (!sapi || !sapi->mgr_attach) {
+        *error_code = CD_JSONRPC_INTERNAL_ERROR;
+        *error_msg  = "Scripting plugin not loaded";
+        return NULL;
+    }
+
+    cd_id_t instance_id = sapi->mgr_attach(sapi->userdata, node_id, file_path);
     if (!cd_id_is_valid(instance_id)) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg  = "Failed to attach script";
@@ -525,8 +500,8 @@ static cJSON* cd_mcp_handle_script_attach(
     }
 
     /* Track in reload watcher if available */
-    if (get_script_reload(kernel) != NULL) {
-        cd_script_reload_track(get_script_reload(kernel), instance_id, true);
+    if (sapi->reload_track) {
+        sapi->reload_track(sapi->userdata, instance_id, true);
     }
 
     /* Build the response */
@@ -586,10 +561,11 @@ static cJSON* cd_mcp_handle_script_detach(
         return NULL;
     }
 
-    /* Check script manager is available */
-    if (get_script_mgr(kernel) == NULL) {
+    /* Check scripting API is available */
+    const cd_scripting_api_t* sapi = get_scripting_api(kernel);
+    if (!sapi || !sapi->mgr_detach) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
-        *error_msg  = "Script manager not available";
+        *error_msg  = "Scripting plugin not loaded";
         return NULL;
     }
 
@@ -640,25 +616,12 @@ static cJSON* cd_mcp_handle_script_detach(
             if (file_path[i] == '\\') file_path[i] = '/';
         }
 
-        /* Search through all instances to find matching node_id + script_path */
-        bool found = false;
-        for (uint32_t i = 0; i < get_script_mgr(kernel)->instances.capacity; i++) {
-            uint32_t gen = get_script_mgr(kernel)->instances.generations[i];
-            if (gen == 0) continue;
-
-            cd_id_t id = cd_id_make(gen, i);
-            cd_script_instance_t* inst = cd_script_mgr_get(get_script_mgr(kernel), id);
-            if (inst && inst->active && inst->node_id == node_id) {
-                /* Check if script path matches */
-                if (strcmp(inst->script_path, file_path) == 0) {
-                    instance_id = id;
-                    found = true;
-                    break;
-                }
-            }
+        /* Find instance by node ID + script path via vtable */
+        if (sapi->mgr_find_by_path) {
+            instance_id = sapi->mgr_find_by_path(sapi->userdata, node_id, file_path);
         }
 
-        if (!found) {
+        if (!cd_id_is_valid(instance_id)) {
             *error_code = CD_JSONRPC_INVALID_PARAMS;
             *error_msg  = "No script instance found for given node and scriptUri";
             return NULL;
@@ -666,12 +629,12 @@ static cJSON* cd_mcp_handle_script_detach(
     }
 
     /* Untrack from reload watcher before detaching */
-    if (get_script_reload(kernel) != NULL) {
-        cd_script_reload_untrack(get_script_reload(kernel), instance_id);
+    if (sapi->reload_untrack) {
+        sapi->reload_untrack(sapi->userdata, instance_id);
     }
 
     /* Detach the script instance */
-    cd_result_t res = cd_script_mgr_detach(get_script_mgr(kernel), instance_id);
+    cd_result_t res = sapi->mgr_detach(sapi->userdata, instance_id);
     if (res != CD_OK) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg  = "Failed to detach script instance";

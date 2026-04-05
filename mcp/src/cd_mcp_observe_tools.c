@@ -28,7 +28,7 @@
 #include "cadence/cd_scene.h"
 #include "cadence/cd_type_registry.h"
 #include "cadence/cd_builtin_types.h"
-#include "cadence/cd_script_instance.h"
+#include "cadence/cd_scripting_api.h"
 #include "cJSON.h"
 
 #include <lua.h>
@@ -47,23 +47,9 @@
  * dependency on cd_mcp_script_tools.c.
  * ============================================================================ */
 
-static cd_script_mgr_t* s_fallback_observe_mgr = NULL;
-
-void cd_mcp_observe_tools_set_mgr(void* mgr) {
-    s_fallback_observe_mgr = (cd_script_mgr_t*)mgr;
-}
-
-void* cd_mcp_observe_tools_get_mgr(void) {
-    return (void*)s_fallback_observe_mgr;
-}
-
-/** Get the observe script manager, preferring kernel tool state if available. */
-static cd_script_mgr_t* get_observe_mgr(struct cd_kernel_t* kernel) {
-    if (kernel && cd_kernel_get_mcp_tool_state(kernel) && cd_kernel_get_mcp_tool_state(kernel)->script.observe_script_mgr) {
-        return cd_kernel_get_mcp_tool_state(kernel)->script.observe_script_mgr;
-    }
-    return s_fallback_observe_mgr;
-}
+/* Legacy setters — kept as no-ops for backward compatibility. */
+void cd_mcp_observe_tools_set_mgr(void* mgr) { (void)mgr; }
+void* cd_mcp_observe_tools_get_mgr(void) { return NULL; }
 
 /* ============================================================================
  * Internal: Parse "index:generation" string to cd_id_t
@@ -337,23 +323,23 @@ static cJSON* resolve_key_for_node(struct cd_kernel_t* kernel,
             return cJSON_CreateNull();
         }
 
-        if (get_observe_mgr(kernel) == NULL) {
+        const cd_scripting_api_t* sapi = cd_kernel_get_scripting_api(kernel);
+        if (!sapi || !sapi->mgr_find_prop_instance) {
             return cJSON_CreateNull();
         }
 
         /* Find the first instance that owns this field. */
-        cd_id_t inst_id = cd_script_mgr_find_prop_instance(
-            get_observe_mgr(kernel), node_id, field);
+        cd_id_t inst_id = sapi->mgr_find_prop_instance(
+            sapi->userdata, node_id, field);
 
         if (!cd_id_is_valid(inst_id)) {
             return cJSON_CreateNull();
         }
 
         /* Push the Lua value onto the stack and convert it. */
-        lua_State* L = get_observe_mgr(kernel)->L;
-        int pushed = cd_script_instance_push_prop(get_observe_mgr(kernel),
-                                                   inst_id, field);
-        if (!pushed) {
+        lua_State* L = (lua_State*)sapi->get_lua_state(sapi->userdata);
+        int pushed = sapi->instance_push_prop(sapi->userdata, inst_id, field);
+        if (!pushed || !L) {
             return cJSON_CreateNull();
         }
 

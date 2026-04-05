@@ -1,7 +1,8 @@
 # CMakeLists.txt - Cadence App (dev engine + runtime)
 #
 # Builds cadence-engine (MCP + editor) and cadence-runtime (game player)
-# against the Cadence kernel SDK + plugins.
+# against the Cadence kernel SDK.  Plugins are separate repos that build
+# independently and are loaded at runtime via dlopen.
 #
 # Two modes:
 #   1. Source tree: set CADENCE_KERNEL_DIR to the cadence-kernel checkout
@@ -29,7 +30,6 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 # Build options
-option(CD_BUILD_EDITOR "Build editor UI plugin" ON)
 option(CD_BUILD_HEADLESS "Build headless (no windowing)" OFF)
 
 set(CADENCE_KERNEL_DIR "" CACHE PATH "Path to cadence-kernel source tree (dev mode)")
@@ -57,38 +57,6 @@ else()
 endif()
 
 # ============================================================================
-# Plugins — auto-discover from plugins/ directory
-# ============================================================================
-
-set(_CD_PLUGIN_DIRS
-    renderer-null renderer-opengl input scripting-lua physics-jolt
-    input-sim audio audio-null scene-io ui-runtime animation particles
-    renderer-2d renderer-software networking asset-pipeline portal
-    spatial scene-streaming material-asset demo-launcher renderer-lua
-    nav ai dialogue
-)
-
-set(_CD_PLUGIN_COUNT 0)
-foreach(_plug IN LISTS _CD_PLUGIN_DIRS)
-    string(REPLACE "-" "_" _plug_dir "${_plug}")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/${_plug_dir}/CMakeLists.txt")
-        if(CD_BUILD_HEADLESS AND (_plug_dir STREQUAL "renderer_opengl" OR _plug_dir STREQUAL "input"))
-            continue()
-        endif()
-        add_subdirectory(plugins/${_plug_dir})
-        math(EXPR _CD_PLUGIN_COUNT "${_CD_PLUGIN_COUNT} + 1")
-    endif()
-endforeach()
-
-# Editor plugin
-if(CD_BUILD_EDITOR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/plugins/editor/CMakeLists.txt")
-    add_subdirectory(plugins/editor)
-endif()
-
-list(LENGTH _CD_PLUGIN_DIRS _CD_PLUGIN_TOTAL)
-message(STATUS "Plugins found: ${_CD_PLUGIN_COUNT} of ${_CD_PLUGIN_TOTAL}")
-
-# ============================================================================
 # MCP library
 # ============================================================================
 
@@ -98,12 +66,7 @@ add_subdirectory(mcp)
 # cadence-engine (dev binary with MCP + editor)
 # ============================================================================
 
-if(_CD_PLUGIN_COUNT GREATER 0)
-    add_subdirectory(main)
-    message(STATUS "cadence-engine: ENABLED")
-else()
-    message(STATUS "cadence-engine: SKIPPED (no plugins — clone into plugins/)")
-endif()
+add_subdirectory(main)
 
 # ============================================================================
 # cadence-runtime (stripped game-only binary)
@@ -113,35 +76,17 @@ add_subdirectory(runtime)
 
 # ============================================================================
 # Engine release: cmake --install build --component engine
+#
+# Installs the executables and shaders.  Plugin DLLs are built and released
+# independently by each plugin repo — collect them into bin/ at packaging time.
 # ============================================================================
 
-if(TARGET cadence-engine)
-    install(TARGETS cadence-engine
-        RUNTIME DESTINATION bin
-        COMPONENT engine
-    )
-endif()
-
-if(TARGET cadence-runtime)
-    install(TARGETS cadence-runtime
-        RUNTIME DESTINATION bin
-        COMPONENT engine
-    )
-endif()
-
-# Plugin DLLs
-install(
-    DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/"
-    DESTINATION bin
+install(TARGETS cadence-engine cadence-runtime
+    RUNTIME DESTINATION bin
     COMPONENT engine
-    FILES_MATCHING
-        PATTERN "*.dll"
-        PATTERN "*.so"
-        PATTERN "*.exe"
-        PATTERN "*.pdb" EXCLUDE
 )
 
-# Shader files
+# Shader files (copied to build/bin by the kernel build)
 install(
     DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/shaders/"
     DESTINATION bin/shaders

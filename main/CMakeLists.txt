@@ -28,10 +28,7 @@ if(UNIX)
     target_link_libraries(cadence-engine PRIVATE pthread)
 endif()
 
-# Link editor plugin for headed mode (ImGui overlay)
-if(CD_BUILD_EDITOR AND NOT CD_BUILD_HEADLESS AND TARGET cadence-editor)
-    target_link_libraries(cadence-engine PRIVATE cadence-editor)
-endif()
+# Editor plugin is loaded at runtime via dlopen — not linked at build time
 
 # Increase stack size to 8MB (renderer has large stack allocations)
 if(MSVC)

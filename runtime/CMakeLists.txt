@@ -20,9 +20,7 @@ target_link_libraries(cadence-runtime
         cadence-kernel
         ${CMAKE_DL_LIBS}
 )
-if(TARGET scene_streaming)
-    target_link_libraries(cadence-runtime PRIVATE scene_streaming)
-endif()
+# Scene streaming plugin is loaded at runtime via dlopen — not linked at build time
 if(UNIX)
     target_link_libraries(cadence-runtime PRIVATE pthread)
 endif()

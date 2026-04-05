@@ -17,6 +17,7 @@
 #include "cadence/cd_mcp_error.h"
 #include "cadence/cd_kernel.h"
 #include "cadence/cd_kernel_api.h"
+#include "cadence/cd_ui_api.h"
 #include "cadence/cd_ui.h"
 #include "cJSON.h"
 
@@ -24,12 +25,16 @@
 #include <stdio.h>
 
 /* ============================================================================
- * Helper: get UI system from kernel
+ * Helper: get UI API vtable and UI system from kernel
  * ============================================================================ */
 
+static const cd_ui_api_t* get_ui_api(struct cd_kernel_t* kernel) {
+    return kernel ? cd_kernel_get_ui_api(kernel) : NULL;
+}
+
 static cd_ui_system_t* get_ui(struct cd_kernel_t* kernel) {
-    if (!kernel) return NULL;
-    return cd_kernel_get_ui(kernel);
+    const cd_ui_api_t* api = get_ui_api(kernel);
+    return (api && api->get_system) ? api->get_system(api->userdata) : NULL;
 }
 
 /* ============================================================================
@@ -84,8 +89,8 @@ static cJSON* cd_mcp_handle_ui_create_screen(
     struct cd_kernel_t* kernel, const cJSON* params,
     int* error_code, const char** error_msg)
 {
-    cd_ui_system_t* ui = get_ui(kernel);
-    if (!ui) {
+    const cd_ui_api_t* uapi = get_ui_api(kernel);
+    if (!uapi || !uapi->screen_get_or_create) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg = cd_mcp_error_fmt(
             "UI system not initialized",
@@ -104,7 +109,7 @@ static cJSON* cd_mcp_handle_ui_create_screen(
         return NULL;
     }
 
-    int32_t idx = cd_ui_screen_get_or_create(ui, name_item->valuestring);
+    int32_t idx = uapi->screen_get_or_create(uapi->userdata, name_item->valuestring);
     if (idx < 0) {
         char detail[256];
         snprintf(detail, sizeof(detail),
@@ -132,8 +137,8 @@ static cJSON* cd_mcp_handle_ui_create_element(
     struct cd_kernel_t* kernel, const cJSON* params,
     int* error_code, const char** error_msg)
 {
-    cd_ui_system_t* ui = get_ui(kernel);
-    if (!ui) {
+    const cd_ui_api_t* uapi = get_ui_api(kernel);
+    if (!uapi || !uapi->create_label) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg = cd_mcp_error_fmt(
             "UI system not initialized",
@@ -175,18 +180,18 @@ static cJSON* cd_mcp_handle_ui_create_element(
 
     int32_t id = -1;
     if (strcmp(type, "label") == 0) {
-        id = cd_ui_create_label(ui, screen, text, x, y, fs);
+        id = uapi->create_label(uapi->userdata, screen, text, x, y, fs);
     } else if (strcmp(type, "panel") == 0) {
         cd_ui_color_t color = {0.2f, 0.2f, 0.2f, 0.8f};
-        id = cd_ui_create_panel(ui, screen, x, y, w, h, color);
+        id = uapi->create_panel(uapi->userdata, screen, x, y, w, h, color);
     } else if (strcmp(type, "button") == 0) {
-        id = cd_ui_create_button(ui, screen, text, x, y, w, h);
+        id = uapi->create_button(uapi->userdata, screen, text, x, y, w, h);
     } else if (strcmp(type, "progress") == 0) {
         const cJSON* val_item = cJSON_GetObjectItemCaseSensitive(params, "value");
         float val = val_item && cJSON_IsNumber(val_item) ? (float)val_item->valuedouble : 0.0f;
         cd_ui_color_t fill = {0.0f, 0.8f, 0.2f, 1.0f};
         cd_ui_color_t bg = {0.3f, 0.3f, 0.3f, 0.8f};
-        id = cd_ui_create_progress(ui, screen, x, y, w, h, val, fill, bg);
+        id = uapi->create_progress(uapi->userdata, screen, x, y, w, h, val, fill, bg);
     } else {
         char detail[256];
         snprintf(detail, sizeof(detail),
@@ -216,12 +221,12 @@ static cJSON* cd_mcp_handle_ui_create_element(
     /* Apply optional properties */
     const cJSON* anchor_item = cJSON_GetObjectItemCaseSensitive(params, "anchor");
     if (anchor_item && cJSON_IsString(anchor_item)) {
-        cd_ui_set_anchor(ui, id, mcp_parse_anchor(anchor_item->valuestring));
+        uapi->set_anchor(uapi->userdata, id, mcp_parse_anchor(anchor_item->valuestring));
     }
 
     const cJSON* visible_item = cJSON_GetObjectItemCaseSensitive(params, "visible");
     if (visible_item && cJSON_IsBool(visible_item)) {
-        cd_ui_set_visible(ui, id, cJSON_IsTrue(visible_item));
+        uapi->set_visible(uapi->userdata, id, cJSON_IsTrue(visible_item));
     }
 
     cJSON* result = cJSON_CreateObject();
@@ -238,8 +243,8 @@ static cJSON* cd_mcp_handle_ui_update_element(
     struct cd_kernel_t* kernel, const cJSON* params,
     int* error_code, const char** error_msg)
 {
-    cd_ui_system_t* ui = get_ui(kernel);
-    if (!ui) {
+    const cd_ui_api_t* uapi = get_ui_api(kernel);
+    if (!uapi || !uapi->get_element) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg = cd_mcp_error_fmt(
             "UI system not initialized",
@@ -259,7 +264,7 @@ static cJSON* cd_mcp_handle_ui_update_element(
     }
 
     int32_t id = (int32_t)id_item->valuedouble;
-    cd_ui_element_t* e = cd_ui_get_element(ui, id);
+    cd_ui_element_t* e = (cd_ui_element_t*)uapi->get_element(uapi->userdata, id);
     if (!e) {
         char detail[256];
         snprintf(detail, sizeof(detail),
@@ -275,25 +280,25 @@ static cJSON* cd_mcp_handle_ui_update_element(
 
     const cJSON* text_item = cJSON_GetObjectItemCaseSensitive(params, "text");
     if (text_item && cJSON_IsString(text_item))
-        cd_ui_set_text(ui, id, text_item->valuestring);
+        uapi->set_text(uapi->userdata, id, text_item->valuestring);
 
     const cJSON* x_item = cJSON_GetObjectItemCaseSensitive(params, "x");
     const cJSON* y_item = cJSON_GetObjectItemCaseSensitive(params, "y");
     if (x_item && cJSON_IsNumber(x_item) && y_item && cJSON_IsNumber(y_item))
-        cd_ui_set_position(ui, id, (float)x_item->valuedouble, (float)y_item->valuedouble);
+        uapi->set_position(uapi->userdata, id, (float)x_item->valuedouble, (float)y_item->valuedouble);
 
     const cJSON* w_item = cJSON_GetObjectItemCaseSensitive(params, "width");
     const cJSON* h_item = cJSON_GetObjectItemCaseSensitive(params, "height");
     if (w_item && cJSON_IsNumber(w_item) && h_item && cJSON_IsNumber(h_item))
-        cd_ui_set_size(ui, id, (float)w_item->valuedouble, (float)h_item->valuedouble);
+        uapi->set_size(uapi->userdata, id, (float)w_item->valuedouble, (float)h_item->valuedouble);
 
     const cJSON* vis_item = cJSON_GetObjectItemCaseSensitive(params, "visible");
     if (vis_item && cJSON_IsBool(vis_item))
-        cd_ui_set_visible(ui, id, cJSON_IsTrue(vis_item));
+        uapi->set_visible(uapi->userdata, id, cJSON_IsTrue(vis_item));
 
     const cJSON* anchor_item = cJSON_GetObjectItemCaseSensitive(params, "anchor");
     if (anchor_item && cJSON_IsString(anchor_item))
-        cd_ui_set_anchor(ui, id, mcp_parse_anchor(anchor_item->valuestring));
+        uapi->set_anchor(uapi->userdata, id, mcp_parse_anchor(anchor_item->valuestring));
 
     const cJSON* fs_item = cJSON_GetObjectItemCaseSensitive(params, "font_size");
     if (fs_item && cJSON_IsNumber(fs_item))
@@ -301,7 +306,7 @@ static cJSON* cd_mcp_handle_ui_update_element(
 
     const cJSON* prog_item = cJSON_GetObjectItemCaseSensitive(params, "value");
     if (prog_item && cJSON_IsNumber(prog_item))
-        cd_ui_set_progress(ui, id, (float)prog_item->valuedouble);
+        uapi->set_progress(uapi->userdata, id, (float)prog_item->valuedouble);
 
     cJSON* result = cJSON_CreateObject();
     cJSON_AddNumberToObject(result, "id", (double)id);
@@ -317,8 +322,8 @@ static cJSON* cd_mcp_handle_ui_remove_element(
     struct cd_kernel_t* kernel, const cJSON* params,
     int* error_code, const char** error_msg)
 {
-    cd_ui_system_t* ui = get_ui(kernel);
-    if (!ui) {
+    const cd_ui_api_t* uapi = get_ui_api(kernel);
+    if (!uapi || !uapi->remove_element) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg = cd_mcp_error_fmt(
             "UI system not initialized",
@@ -338,7 +343,7 @@ static cJSON* cd_mcp_handle_ui_remove_element(
     }
 
     int32_t id = (int32_t)id_item->valuedouble;
-    cd_ui_remove_element(ui, id);
+    uapi->remove_element(uapi->userdata, id);
 
     cJSON* result = cJSON_CreateObject();
     cJSON_AddNumberToObject(result, "id", (double)id);
@@ -423,8 +428,8 @@ static cJSON* cd_mcp_handle_ui_show_screen(
     struct cd_kernel_t* kernel, const cJSON* params,
     int* error_code, const char** error_msg)
 {
-    cd_ui_system_t* ui = get_ui(kernel);
-    if (!ui) {
+    const cd_ui_api_t* uapi = get_ui_api(kernel);
+    if (!uapi || !uapi->screen_show) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg = cd_mcp_error_fmt(
             "UI system not initialized",
@@ -443,7 +448,7 @@ static cJSON* cd_mcp_handle_ui_show_screen(
         return NULL;
     }
 
-    cd_ui_screen_show(ui, name_item->valuestring);
+    uapi->screen_show(uapi->userdata, name_item->valuestring);
 
     cJSON* result = cJSON_CreateObject();
     cJSON_AddStringToObject(result, "screen", name_item->valuestring);
@@ -455,8 +460,8 @@ static cJSON* cd_mcp_handle_ui_hide_screen(
     struct cd_kernel_t* kernel, const cJSON* params,
     int* error_code, const char** error_msg)
 {
-    cd_ui_system_t* ui = get_ui(kernel);
-    if (!ui) {
+    const cd_ui_api_t* uapi = get_ui_api(kernel);
+    if (!uapi || !uapi->screen_hide) {
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg = cd_mcp_error_fmt(
             "UI system not initialized",
@@ -475,7 +480,7 @@ static cJSON* cd_mcp_handle_ui_hide_screen(
         return NULL;
     }
 
-    cd_ui_screen_hide(ui, name_item->valuestring);
+    uapi->screen_hide(uapi->userdata, name_item->valuestring);
 
     cJSON* result = cJSON_CreateObject();
     cJSON_AddStringToObject(result, "screen", name_item->valuestring);
