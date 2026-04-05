@@ -29,35 +29,95 @@
 #include <string.h>
 #include <stdio.h>
 
-/* BL-83: Access networking plugin state through the kernel vtable.
- * No direct cross-plugin linking required. */
+/* All networking operations go through the cd_net_ext_api_t vtable. */
+static const cd_net_ext_api_t* net_api(struct cd_kernel_t* kernel) {
+    return kernel ? cd_kernel_get_net_ext_api(kernel) : NULL;
+}
+
+/* Sub-object getters — for reading struct fields only. */
 static cd_net_session_t* net_get_session(struct cd_kernel_t* kernel) {
-    const cd_net_ext_api_t* api = cd_kernel_get_net_ext_api(kernel);
-    return api ? (cd_net_session_t*)api->get_session(api->userdata) : NULL;
-}
-static void net_set_active(struct cd_kernel_t* kernel, bool active) {
-    const cd_net_ext_api_t* api = cd_kernel_get_net_ext_api(kernel);
-    if (api) api->set_active(active, api->userdata);
-}
-static cd_net_replication_t* net_get_replication(struct cd_kernel_t* kernel) {
-    const cd_net_ext_api_t* api = cd_kernel_get_net_ext_api(kernel);
-    return api ? (cd_net_replication_t*)api->get_replication(api->userdata) : NULL;
+    const cd_net_ext_api_t* api = net_api(kernel);
+    return api && api->get_session ? (cd_net_session_t*)api->get_session(api->userdata) : NULL;
 }
 static cd_net_diagnostics_t* net_get_diagnostics(struct cd_kernel_t* kernel) {
-    const cd_net_ext_api_t* api = cd_kernel_get_net_ext_api(kernel);
-    return api ? (cd_net_diagnostics_t*)api->get_diagnostics(api->userdata) : NULL;
+    const cd_net_ext_api_t* api = net_api(kernel);
+    return api && api->get_diagnostics ? (cd_net_diagnostics_t*)api->get_diagnostics(api->userdata) : NULL;
 }
 static cd_net_lobby_t* net_get_lobby(struct cd_kernel_t* kernel) {
-    const cd_net_ext_api_t* api = cd_kernel_get_net_ext_api(kernel);
-    return api ? (cd_net_lobby_t*)api->get_lobby(api->userdata) : NULL;
+    const cd_net_ext_api_t* api = net_api(kernel);
+    return api && api->get_lobby ? (cd_net_lobby_t*)api->get_lobby(api->userdata) : NULL;
 }
 static cd_net_nat_t* net_get_nat(struct cd_kernel_t* kernel) {
-    const cd_net_ext_api_t* api = cd_kernel_get_net_ext_api(kernel);
-    return api ? (cd_net_nat_t*)api->get_nat(api->userdata) : NULL;
+    const cd_net_ext_api_t* api = net_api(kernel);
+    return api && api->get_nat ? (cd_net_nat_t*)api->get_nat(api->userdata) : NULL;
+}
+static cd_net_replication_t* net_get_replication(struct cd_kernel_t* kernel) {
+    const cd_net_ext_api_t* api = net_api(kernel);
+    return api && api->get_replication ? (cd_net_replication_t*)api->get_replication(api->userdata) : NULL;
 }
 static cd_net_relay_server_t* net_get_relay_server(struct cd_kernel_t* kernel) {
-    const cd_net_ext_api_t* api = cd_kernel_get_net_ext_api(kernel);
-    return api ? (cd_net_relay_server_t*)api->get_relay_server(api->userdata) : NULL;
+    const cd_net_ext_api_t* api = net_api(kernel);
+    return api && api->get_relay_server ? (cd_net_relay_server_t*)api->get_relay_server(api->userdata) : NULL;
+}
+static void net_set_active(struct cd_kernel_t* kernel, bool active) {
+    const cd_net_ext_api_t* api = net_api(kernel);
+    if (api && api->set_active) api->set_active(active, api->userdata);
+}
+
+/* Vtable wrappers for networking operations — return error/0 if plugin not loaded */
+static cd_result_t net_session_host(struct cd_kernel_t* k, uint16_t port, uint32_t max, const char* name) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->session_host) ? a->session_host(a->userdata, port, max, name) : CD_ERR_INVALID;
+}
+static cd_result_t net_session_connect(struct cd_kernel_t* k, const char* host, uint16_t port, const char* name) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->session_connect) ? a->session_connect(a->userdata, host, port, name) : CD_ERR_INVALID;
+}
+static void net_session_disconnect(struct cd_kernel_t* k) {
+    const cd_net_ext_api_t* a = net_api(k); if (a && a->session_disconnect) a->session_disconnect(a->userdata);
+}
+static uint32_t net_session_connected_count(struct cd_kernel_t* k) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->session_connected_count) ? a->session_connected_count(a->userdata) : 0;
+}
+static cd_result_t net_replication_register(struct cd_kernel_t* k, uint32_t node, uint8_t auth, uint32_t owner, uint8_t pri) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->replication_register) ? a->replication_register(a->userdata, node, auth, owner, pri) : CD_ERR_INVALID;
+}
+static uint32_t net_diagnostics_bandwidth_up(struct cd_kernel_t* k) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->diagnostics_bandwidth_up) ? a->diagnostics_bandwidth_up(a->userdata) : 0;
+}
+static uint32_t net_diagnostics_bandwidth_down(struct cd_kernel_t* k) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->diagnostics_bandwidth_down) ? a->diagnostics_bandwidth_down(a->userdata) : 0;
+}
+static void net_diagnostics_set_sim(struct cd_kernel_t* k, float lat, float jit, float loss) {
+    const cd_net_ext_api_t* a = net_api(k); if (a && a->diagnostics_set_sim) a->diagnostics_set_sim(a->userdata, lat, jit, loss);
+}
+static void net_diagnostics_clear_sim(struct cd_kernel_t* k) {
+    const cd_net_ext_api_t* a = net_api(k); if (a && a->diagnostics_clear_sim) a->diagnostics_clear_sim(a->userdata);
+}
+static cd_result_t net_lobby_create_room(struct cd_kernel_t* k, const char* name, uint32_t max, uint32_t* out) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->lobby_create_room) ? a->lobby_create_room(a->userdata, name, max, out) : CD_ERR_INVALID;
+}
+static cd_result_t net_lobby_set_property(struct cd_kernel_t* k, uint32_t room, const char* key, const char* val) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->lobby_set_property) ? a->lobby_set_property(a->userdata, room, key, val) : CD_ERR_INVALID;
+}
+static uint32_t net_lobby_list(struct cd_kernel_t* k, void* out, uint32_t max) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->lobby_list) ? a->lobby_list(a->userdata, out, max) : 0;
+}
+static cd_result_t net_lobby_join(struct cd_kernel_t* k, uint32_t room, const char* name) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->lobby_join) ? a->lobby_join(a->userdata, room, name) : CD_ERR_INVALID;
+}
+static cd_result_t net_lobby_leave(struct cd_kernel_t* k, uint32_t room) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->lobby_leave) ? a->lobby_leave(a->userdata, room) : CD_ERR_INVALID;
+}
+static cd_result_t net_lobby_start_game(struct cd_kernel_t* k, uint32_t room) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->lobby_start_game) ? a->lobby_start_game(a->userdata, room) : CD_ERR_INVALID;
+}
+static uint32_t net_lobby_get_players(struct cd_kernel_t* k, uint32_t room, void* out, uint32_t max) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->lobby_get_players) ? a->lobby_get_players(a->userdata, room, out, max) : 0;
+}
+static void net_nat_detect_poll(struct cd_kernel_t* k, double dt) {
+    const cd_net_ext_api_t* a = net_api(k); if (a && a->nat_detect_poll) a->nat_detect_poll(a->userdata, dt);
+}
+static const char* net_nat_type_to_string(struct cd_kernel_t* k) {
+    const cd_net_ext_api_t* a = net_api(k); return (a && a->nat_type_to_string) ? a->nat_type_to_string(a->userdata) : "unknown";
 }
 
 /* ============================================================================
@@ -95,10 +155,7 @@ static cJSON* handle_net_host(struct cd_kernel_t* kernel,
         name = name_item->valuestring;
     }
 
-    cd_result_t res = cd_net_session_host(session,
-                                           (uint16_t)port,
-                                           (uint32_t)max_clients,
-                                           name);
+    cd_result_t res = net_session_host(kernel, (uint16_t)port, (uint32_t)max_clients, name);
     if (res != CD_OK) {
         *error_code = -32603;
         *error_msg = "Failed to start hosting";
@@ -149,10 +206,7 @@ static cJSON* handle_net_connect(struct cd_kernel_t* kernel,
         client_name = name_item->valuestring;
     }
 
-    cd_result_t res = cd_net_session_connect(session,
-                                              host_item->valuestring,
-                                              (uint16_t)port,
-                                              client_name);
+    cd_result_t res = net_session_connect(kernel, host_item->valuestring, (uint16_t)port, client_name);
     if (res != CD_OK) {
         *error_code = -32603;
         *error_msg = "Failed to connect";
@@ -185,7 +239,7 @@ static cJSON* handle_net_disconnect(struct cd_kernel_t* kernel,
         return NULL;
     }
 
-    cd_net_session_disconnect(session);
+    net_session_disconnect(kernel);
     net_set_active(kernel, false);
 
     cJSON* result = cJSON_CreateObject();
@@ -226,7 +280,7 @@ static cJSON* handle_net_status(struct cd_kernel_t* kernel,
     cJSON* result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "pluginLoaded", 1);
     cJSON_AddStringToObject(result, "state", session_state_str(session->state));
-    uint32_t peer_count = cd_net_session_connected_count(session);
+    uint32_t peer_count = net_session_connected_count(kernel);
     cJSON_AddNumberToObject(result, "peerCount", (double)peer_count);
     cJSON_AddStringToObject(result, "sessionName", session->session_name);
     cJSON_AddNumberToObject(result, "protocolVersion",
@@ -325,8 +379,8 @@ static cJSON* handle_net_replicate(struct cd_kernel_t* kernel,
         priority = (uint8_t)prio_item->valueint;
     }
 
-    cd_result_t res = cd_net_replication_register(repl, node_id, authority,
-                                                   owner_id, priority);
+    cd_result_t res = net_replication_register(kernel, node_id, authority,
+                                                owner_id, priority);
     if (res != CD_OK) {
         *error_code = -32603;
         *error_msg = "Failed to register node for replication";
@@ -362,7 +416,7 @@ static cJSON* handle_net_diagnostics(struct cd_kernel_t* kernel,
     cJSON* result = cJSON_CreateObject();
 
     /* Connected peers count */
-    uint32_t peer_count = cd_net_session_connected_count(session);
+    uint32_t peer_count = net_session_connected_count(kernel);
     cJSON_AddNumberToObject(result, "connected_peers", (double)peer_count);
 
     /* Aggregate stats from transport */
@@ -431,9 +485,9 @@ static cJSON* handle_net_diagnostics(struct cd_kernel_t* kernel,
 
     /* Bandwidth */
     cJSON_AddNumberToObject(result, "bandwidth_up_kbps",
-                            (double)cd_net_diagnostics_bandwidth_up(diag));
+                            (double)net_diagnostics_bandwidth_up(kernel));
     cJSON_AddNumberToObject(result, "bandwidth_down_kbps",
-                            (double)cd_net_diagnostics_bandwidth_down(diag));
+                            (double)net_diagnostics_bandwidth_down(kernel));
 
     /* Uptime */
     double uptime = 0.0;
@@ -490,7 +544,7 @@ static cJSON* handle_net_simulate_conditions(struct cd_kernel_t* kernel,
 
     /* If params is NULL or empty object, disable simulation */
     if (params == NULL || cJSON_GetArraySize(params) == 0) {
-        cd_net_diagnostics_clear_sim(diag);
+        net_diagnostics_clear_sim(kernel);
 
         cJSON* result = cJSON_CreateObject();
         cJSON_AddStringToObject(result, "status", "disabled");
@@ -501,7 +555,7 @@ static cJSON* handle_net_simulate_conditions(struct cd_kernel_t* kernel,
     const cJSON* enabled_item =
         cJSON_GetObjectItemCaseSensitive(params, "enabled");
     if (cJSON_IsBool(enabled_item) && !cJSON_IsTrue(enabled_item)) {
-        cd_net_diagnostics_clear_sim(diag);
+        net_diagnostics_clear_sim(kernel);
 
         cJSON* result = cJSON_CreateObject();
         cJSON_AddStringToObject(result, "status", "disabled");
@@ -560,7 +614,7 @@ static cJSON* handle_net_simulate_conditions(struct cd_kernel_t* kernel,
         return NULL;
     }
 
-    cd_net_diagnostics_set_sim(diag, &sim);
+    net_diagnostics_set_sim(kernel, sim.latency_ms, sim.jitter_ms, sim.packet_loss_percent);
 
     cJSON* result = cJSON_CreateObject();
     cJSON_AddStringToObject(result, "status", "enabled");
@@ -616,7 +670,7 @@ static cJSON* handle_net_lobby_create(struct cd_kernel_t* kernel,
     }
 
     uint32_t room_id = 0;
-    cd_result_t res = cd_net_lobby_create_room(lobby,
+    cd_result_t res = net_lobby_create_room(kernel,
                                                 name_item->valuestring,
                                                 (uint32_t)max_players,
                                                 host_peer_id, host_name,
@@ -634,7 +688,7 @@ static cJSON* handle_net_lobby_create(struct cd_kernel_t* kernel,
         const cJSON* prop = NULL;
         cJSON_ArrayForEach(prop, props) {
             if (cJSON_IsString(prop) && prop->string) {
-                cd_net_lobby_set_property(lobby, room_id,
+                net_lobby_set_property(kernel, room_id,
                                            prop->string, prop->valuestring);
             }
         }
@@ -675,7 +729,7 @@ static cJSON* handle_net_lobby_list(struct cd_kernel_t* kernel,
     }
 
     cd_net_lobby_room_info_t rooms[CD_NET_LOBBY_MAX_ROOMS];
-    uint32_t count = cd_net_lobby_list(lobby, rooms,
+    uint32_t count = net_lobby_list(kernel, rooms,
                                         CD_NET_LOBBY_MAX_ROOMS, include_all);
 
     cJSON* result = cJSON_CreateObject();
@@ -739,7 +793,7 @@ static cJSON* handle_net_lobby_join(struct cd_kernel_t* kernel,
         peer_id = (uint32_t)peer_item->valueint;
     }
 
-    cd_result_t res = cd_net_lobby_join(lobby,
+    cd_result_t res = net_lobby_join(kernel,
                                          (uint32_t)room_item->valueint,
                                          peer_id,
                                          name_item->valuestring);
@@ -788,7 +842,7 @@ static cJSON* handle_net_lobby_leave(struct cd_kernel_t* kernel,
         return NULL;
     }
 
-    cd_result_t res = cd_net_lobby_leave(lobby,
+    cd_result_t res = net_lobby_leave(kernel,
                                           (uint32_t)room_item->valueint,
                                           (uint32_t)peer_item->valueint);
     if (res != CD_OK) {
@@ -832,7 +886,7 @@ static cJSON* handle_net_lobby_start(struct cd_kernel_t* kernel,
         return NULL;
     }
 
-    cd_result_t res = cd_net_lobby_start_game(lobby,
+    cd_result_t res = net_lobby_start_game(kernel,
                                                (uint32_t)room_item->valueint,
                                                (uint32_t)peer_item->valueint);
     if (res != CD_OK) {
@@ -872,7 +926,7 @@ static cJSON* handle_net_lobby_players(struct cd_kernel_t* kernel,
     }
 
     cd_net_lobby_player_t players[CD_NET_LOBBY_MAX_PLAYERS];
-    uint32_t count = cd_net_lobby_get_players(lobby,
+    uint32_t count = net_lobby_get_players(kernel,
                                                (uint32_t)room_item->valueint,
                                                players,
                                                CD_NET_LOBBY_MAX_PLAYERS);
@@ -912,12 +966,12 @@ static cJSON* handle_net_nat_detect(struct cd_kernel_t* kernel,
 
     /* Trigger detection if not already done */
     if (!nat->detection.detected) {
-        cd_net_nat_detect_poll(nat, 0.0);
+        net_nat_detect_poll(kernel, 0.0);
     }
 
     cJSON* result = cJSON_CreateObject();
     cJSON_AddStringToObject(result, "nat_type",
-                            cd_nat_type_to_string(nat->detection.type));
+                            net_nat_type_to_string(kernel));
     cJSON_AddBoolToObject(result, "detected",
                           nat->detection.detected ? 1 : 0);
     cJSON_AddStringToObject(result, "public_address",

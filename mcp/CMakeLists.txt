@@ -85,14 +85,8 @@ target_link_libraries(cadence-mcp
         cadence-input-common
 )
 
-# Plugin-provided libraries — conditional on plugin availability
-foreach(_mcp_dep cadence-ui-core cadence-net-core cadence-scene-io-core
-                 cadence-script-core cadence-composer material_asset
-                 scene_streaming)
-    if(TARGET ${_mcp_dep})
-        target_link_libraries(cadence-mcp PRIVATE ${_mcp_dep})
-    endif()
-endforeach()
+# Plugin-provided libraries removed — all plugin access goes through
+# service vtables registered at runtime. No link-time plugin deps.
 
 # Link Winsock on Windows (needed by cd_mcp_tcp.c)
 if(WIN32)

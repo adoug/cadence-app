@@ -28,6 +28,7 @@
 #include "cadence/cd_kernel_api.h"
 #include "cadence/cd_gamespec.h"
 #include "cadence/cd_composer.h"
+#include "cadence/cd_gamespec_api.h"
 #include "cJSON.h"
 
 #include <stdlib.h>
@@ -73,7 +74,7 @@ static void validate_warning(cd_validate_ctx_t* ctx, const char* fmt, ...) {
 
 static void validate_game_section(const cd_gamespec_t* spec,
                                    cd_validate_ctx_t* ctx) {
-    const cJSON* game = cd_gamespec_get_game(spec);
+    const cJSON* game = spec->game;
     if (game == NULL) {
         validate_error(ctx, "[game] section is required");
         return;
@@ -98,7 +99,7 @@ static void validate_game_section(const cd_gamespec_t* spec,
 
 static void validate_states_section(const cd_gamespec_t* spec,
                                      cd_validate_ctx_t* ctx) {
-    const cJSON* states = cd_gamespec_get_states(spec);
+    const cJSON* states = spec->states;
     if (states == NULL) {
         validate_warning(ctx, "[states] section not defined");
         return;
@@ -156,10 +157,10 @@ static void validate_states_section(const cd_gamespec_t* spec,
 
 static void validate_mechanics_section(const cd_gamespec_t* spec,
                                         cd_validate_ctx_t* ctx) {
-    const cJSON* mechanics = cd_gamespec_get_mechanics(spec);
+    const cJSON* mechanics = spec->mechanics;
     if (mechanics == NULL) return; /* optional */
 
-    const cJSON* entities = cd_gamespec_get_entities(spec);
+    const cJSON* entities = spec->entities;
     const cJSON* mechanic = NULL;
 
     cJSON_ArrayForEach(mechanic, mechanics) {
@@ -211,7 +212,7 @@ static void validate_mechanics_section(const cd_gamespec_t* spec,
 
 static void validate_entities_section(const cd_gamespec_t* spec,
                                        cd_validate_ctx_t* ctx) {
-    const cJSON* entities = cd_gamespec_get_entities(spec);
+    const cJSON* entities = spec->entities;
     if (entities == NULL) return; /* optional */
 
     const cJSON* entity = NULL;
@@ -237,10 +238,10 @@ static void validate_entities_section(const cd_gamespec_t* spec,
 
 static void validate_levels_section(const cd_gamespec_t* spec,
                                      cd_validate_ctx_t* ctx) {
-    const cJSON* levels = cd_gamespec_get_levels(spec);
+    const cJSON* levels = spec->levels;
     if (levels == NULL) return; /* optional */
 
-    const cJSON* entities = cd_gamespec_get_entities(spec);
+    const cJSON* entities = spec->entities;
     const cJSON* level = NULL;
 
     cJSON_ArrayForEach(level, levels) {
@@ -279,10 +280,10 @@ static void validate_levels_section(const cd_gamespec_t* spec,
 
 static void validate_common_sections(const cd_gamespec_t* spec,
                                       cd_validate_ctx_t* ctx) {
-    if (cd_gamespec_get_entities(spec) == NULL) {
+    if (spec->entities == NULL) {
         validate_warning(ctx, "[entities] section not defined");
     }
-    if (cd_gamespec_get_input(spec) == NULL) {
+    if (spec->input == NULL) {
         validate_warning(ctx, "[input] section not defined");
     }
 }
@@ -315,7 +316,12 @@ static cJSON* cd_mcp_handle_gamespec_validate(
     int*                error_code,
     const char**        error_msg)
 {
-    (void)kernel; /* validation doesn't need kernel state */
+    const cd_gamespec_api_t* gapi = cd_kernel_get_gamespec_api(kernel);
+    if (!gapi || !gapi->load) {
+        *error_code = CD_JSONRPC_INTERNAL_ERROR;
+        *error_msg  = "Gamespec plugin not loaded";
+        return NULL;
+    }
 
     if (params == NULL) {
         *error_code = CD_JSONRPC_INVALID_PARAMS;
@@ -332,12 +338,12 @@ static cJSON* cd_mcp_handle_gamespec_validate(
 
     if (spec_item != NULL && cJSON_IsString(spec_item) &&
         spec_item->valuestring != NULL) {
-        res = cd_gamespec_load_string(&spec, spec_item->valuestring,
-                                       strlen(spec_item->valuestring));
+        res = gapi->load_string(gapi->userdata, &spec, spec_item->valuestring,
+                                strlen(spec_item->valuestring));
     } else if (filepath_item != NULL && cJSON_IsString(filepath_item) &&
                filepath_item->valuestring != NULL &&
                filepath_item->valuestring[0] != '\0') {
-        res = cd_gamespec_load(&spec, filepath_item->valuestring);
+        res = gapi->load(gapi->userdata, &spec, filepath_item->valuestring);
     } else {
         *error_code = CD_JSONRPC_INVALID_PARAMS;
         *error_msg  = "Must provide 'spec' (TOML string) or 'filepath'";
@@ -364,7 +370,7 @@ static cJSON* cd_mcp_handle_gamespec_validate(
     /* Build response */
     cJSON* result = cJSON_CreateObject();
     if (result == NULL) {
-        cd_gamespec_free(&spec);
+        gapi->free(gapi->userdata, &spec);
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg  = "Failed to allocate JSON response";
         return NULL;
@@ -387,7 +393,7 @@ static cJSON* cd_mcp_handle_gamespec_validate(
     }
     cJSON_AddItemToObject(result, "warnings", warnings_arr);
 
-    cd_gamespec_free(&spec);
+    gapi->free(gapi->userdata, &spec);
     return result;
 }
 
@@ -404,11 +410,17 @@ static cJSON* cd_mcp_handle_gamespec_list_mechanics(
     int*                error_code,
     const char**        error_msg)
 {
-    (void)kernel;
     (void)params;
 
+    const cd_gamespec_api_t* gapi = cd_kernel_get_gamespec_api(kernel);
+    if (!gapi || !gapi->mechanic_templates_builtin) {
+        *error_code = CD_JSONRPC_INTERNAL_ERROR;
+        *error_msg  = "Gamespec plugin not loaded";
+        return NULL;
+    }
+
     uint32_t count = 0;
-    const cd_mechanic_template_t* templates = cd_mechanic_templates_builtin(&count);
+    const cd_mechanic_template_t* templates = gapi->mechanic_templates_builtin(gapi->userdata, &count);
 
     cJSON* result = cJSON_CreateObject();
     if (result == NULL) {
@@ -450,11 +462,17 @@ static cJSON* cd_mcp_handle_gamespec_list_triggers(
     int*                error_code,
     const char**        error_msg)
 {
-    (void)kernel;
     (void)params;
 
+    const cd_gamespec_api_t* gapi = cd_kernel_get_gamespec_api(kernel);
+    if (!gapi || !gapi->trigger_templates_builtin) {
+        *error_code = CD_JSONRPC_INTERNAL_ERROR;
+        *error_msg  = "Gamespec plugin not loaded";
+        return NULL;
+    }
+
     uint32_t count = 0;
-    const cd_trigger_template_t* templates = cd_trigger_templates_builtin(&count);
+    const cd_trigger_template_t* templates = gapi->trigger_templates_builtin(gapi->userdata, &count);
 
     cJSON* result = cJSON_CreateObject();
     if (result == NULL) {

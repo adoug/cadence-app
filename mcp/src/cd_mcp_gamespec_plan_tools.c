@@ -15,7 +15,7 @@
 #include "cadence/cd_kernel.h"
 #include "cadence/cd_kernel_api.h"
 #include "cadence/cd_gamespec.h"
-#include "cadence/cd_composer.h"
+#include "cadence/cd_gamespec_api.h"
 #include "cJSON.h"
 
 #include <stdlib.h>
@@ -94,15 +94,15 @@ static bool section_in_filter(const cJSON* sections_filter,
  */
 static const cJSON* get_spec_section(const cd_gamespec_t* spec,
                                       const char* name) {
-    if (strcmp(name, "states") == 0)      return cd_gamespec_get_states(spec);
-    if (strcmp(name, "mechanics") == 0)   return cd_gamespec_get_mechanics(spec);
-    if (strcmp(name, "entities") == 0)    return cd_gamespec_get_entities(spec);
-    if (strcmp(name, "levels") == 0)      return cd_gamespec_get_levels(spec);
-    if (strcmp(name, "events") == 0)      return cd_gamespec_get_events(spec);
-    if (strcmp(name, "ui") == 0)          return cd_gamespec_get_ui(spec);
-    if (strcmp(name, "triggers") == 0)    return cd_gamespec_get_triggers(spec);
-    if (strcmp(name, "audio") == 0)       return cd_gamespec_get_audio(spec);
-    if (strcmp(name, "progression") == 0) return cd_gamespec_get_progression(spec);
+    if (strcmp(name, "states") == 0)      return spec->states;
+    if (strcmp(name, "mechanics") == 0)   return spec->mechanics;
+    if (strcmp(name, "entities") == 0)    return spec->entities;
+    if (strcmp(name, "levels") == 0)      return spec->levels;
+    if (strcmp(name, "events") == 0)      return spec->events;
+    if (strcmp(name, "ui") == 0)          return spec->ui;
+    if (strcmp(name, "triggers") == 0)    return spec->triggers;
+    if (strcmp(name, "audio") == 0)       return spec->audio;
+    if (strcmp(name, "progression") == 0) return spec->progression;
     return NULL;
 }
 
@@ -132,7 +132,7 @@ static cJSON* build_multi_file_list(const cd_gamespec_t* spec,
     int count = 0;
 
     if (strcmp(section_name, "mechanics") == 0) {
-        const cJSON* section = cd_gamespec_get_mechanics(spec);
+        const cJSON* section = spec->mechanics;
         const cJSON* item = NULL;
         cJSON_ArrayForEach(item, section) {
             if (item->string != NULL) {
@@ -144,7 +144,7 @@ static cJSON* build_multi_file_list(const cd_gamespec_t* spec,
             }
         }
     } else if (strcmp(section_name, "entities") == 0) {
-        const cJSON* section = cd_gamespec_get_entities(spec);
+        const cJSON* section = spec->entities;
         const cJSON* item = NULL;
         cJSON_ArrayForEach(item, section) {
             if (item->string != NULL) {
@@ -156,7 +156,7 @@ static cJSON* build_multi_file_list(const cd_gamespec_t* spec,
             }
         }
     } else if (strcmp(section_name, "levels") == 0) {
-        const cJSON* section = cd_gamespec_get_levels(spec);
+        const cJSON* section = spec->levels;
         const cJSON* item = NULL;
         cJSON_ArrayForEach(item, section) {
             if (item->string != NULL) {
@@ -168,7 +168,7 @@ static cJSON* build_multi_file_list(const cd_gamespec_t* spec,
             }
         }
     } else if (strcmp(section_name, "ui") == 0) {
-        const cJSON* section = cd_gamespec_get_ui(spec);
+        const cJSON* section = spec->ui;
         const cJSON* screens = NULL;
         if (section != NULL) {
             screens = cJSON_GetObjectItemCaseSensitive(section, "screens");
@@ -239,6 +239,13 @@ static cJSON* cd_mcp_handle_gamespec_plan(
     int*                error_code,
     const char**        error_msg)
 {
+    const cd_gamespec_api_t* gapi = cd_kernel_get_gamespec_api(kernel);
+    if (!gapi || !gapi->load) {
+        *error_code = CD_JSONRPC_INTERNAL_ERROR;
+        *error_msg  = "Gamespec plugin not loaded";
+        return NULL;
+    }
+
     if (params == NULL) {
         *error_code = CD_JSONRPC_INVALID_PARAMS;
         *error_msg  = "Missing parameters";
@@ -294,7 +301,7 @@ static cJSON* cd_mcp_handle_gamespec_plan(
 
     /* Load the game spec */
     cd_gamespec_t spec;
-    cd_result_t load_res = cd_gamespec_load(&spec, resolved_path);
+    cd_result_t load_res = gapi->load(gapi->userdata, &spec, resolved_path);
     if (load_res != CD_OK) {
         *error_code = -32000;
         if (load_res == CD_ERR_IO) {
@@ -352,7 +359,7 @@ static cJSON* cd_mcp_handle_gamespec_plan(
     cJSON* result = cJSON_CreateObject();
     if (result == NULL) {
         cJSON_Delete(plan);
-        cd_gamespec_free(&spec);
+        gapi->free(gapi->userdata, &spec);
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg  = "Failed to allocate JSON response";
         return NULL;
@@ -364,7 +371,7 @@ static cJSON* cd_mcp_handle_gamespec_plan(
     cJSON_AddNumberToObject(result, "sections_found", sections_found);
     cJSON_AddNumberToObject(result, "sections_missing", sections_missing);
 
-    cd_gamespec_free(&spec);
+    gapi->free(gapi->userdata, &spec);
     return result;
 }
 
@@ -376,20 +383,21 @@ static cJSON* cd_mcp_handle_gamespec_plan(
  * Generate content for a single-file section to a buffer.
  * Returns CD_OK on success. Caller must free *out_buf.
  */
-static cd_result_t generate_single_to_buffer(const cd_gamespec_t* spec,
+static cd_result_t generate_single_to_buffer(const cd_gamespec_api_t* gapi,
+                                              const cd_gamespec_t* spec,
                                               const char* section_name,
                                               char** out_buf,
                                               size_t* out_len) {
-    if (strcmp(section_name, "states") == 0)
-        return cd_composer_generate_states_to_buffer(spec, out_buf, out_len);
-    if (strcmp(section_name, "events") == 0)
-        return cd_composer_generate_events_to_buffer(spec, out_buf, out_len);
-    if (strcmp(section_name, "triggers") == 0)
-        return cd_composer_generate_triggers_to_buffer(spec, out_buf, out_len);
-    if (strcmp(section_name, "audio") == 0)
-        return cd_composer_generate_audio_to_buffer(spec, out_buf, out_len);
-    if (strcmp(section_name, "progression") == 0)
-        return cd_composer_generate_progression_to_buffer(spec, out_buf, out_len);
+    if (strcmp(section_name, "states") == 0 && gapi->generate_states_to_buffer)
+        return gapi->generate_states_to_buffer(gapi->userdata, spec, out_buf, out_len);
+    if (strcmp(section_name, "events") == 0 && gapi->generate_events_to_buffer)
+        return gapi->generate_events_to_buffer(gapi->userdata, spec, out_buf, out_len);
+    if (strcmp(section_name, "triggers") == 0 && gapi->generate_triggers_to_buffer)
+        return gapi->generate_triggers_to_buffer(gapi->userdata, spec, out_buf, out_len);
+    if (strcmp(section_name, "audio") == 0 && gapi->generate_audio_to_buffer)
+        return gapi->generate_audio_to_buffer(gapi->userdata, spec, out_buf, out_len);
+    if (strcmp(section_name, "progression") == 0 && gapi->generate_progression_to_buffer)
+        return gapi->generate_progression_to_buffer(gapi->userdata, spec, out_buf, out_len);
     return CD_ERR_NOTFOUND;
 }
 
@@ -397,7 +405,8 @@ static cd_result_t generate_single_to_buffer(const cd_gamespec_t* spec,
  * Diff a single-file section: compare generated content vs file on disk.
  * Returns "new", "unchanged", or "modified".
  */
-static const char* diff_single_file(const cd_gamespec_t* spec,
+static const char* diff_single_file(const cd_gamespec_api_t* gapi,
+                                     const cd_gamespec_t* spec,
                                      const char* section_name,
                                      const char* output_dir) {
     int idx = find_plan_section_index(section_name);
@@ -418,7 +427,7 @@ static const char* diff_single_file(const cd_gamespec_t* spec,
     /* Generate to buffer */
     char* generated = NULL;
     size_t gen_len = 0;
-    cd_result_t res = generate_single_to_buffer(spec, section_name,
+    cd_result_t res = generate_single_to_buffer(gapi, spec, section_name,
                                                  &generated, &gen_len);
     if (res != CD_OK) {
         free(existing);
@@ -443,23 +452,24 @@ static const char* diff_single_file(const cd_gamespec_t* spec,
  * Generate content for a single item in a multi-file section.
  * Returns CD_OK on success. Caller must free *out_buf.
  */
-static cd_result_t generate_multi_item_to_buffer(const cd_gamespec_t* spec,
+static cd_result_t generate_multi_item_to_buffer(const cd_gamespec_api_t* gapi,
+                                                   const cd_gamespec_t* spec,
                                                    const char* section_name,
                                                    const char* item_name,
                                                    char** out_buf,
                                                    size_t* out_len) {
-    if (strcmp(section_name, "mechanics") == 0)
-        return cd_composer_generate_mechanics_to_buffer(spec, item_name,
-                                                         out_buf, out_len);
-    if (strcmp(section_name, "entities") == 0)
-        return cd_composer_generate_entity_to_buffer(spec, item_name,
-                                                      out_buf, out_len);
-    if (strcmp(section_name, "levels") == 0)
-        return cd_composer_generate_level_to_buffer(spec, item_name,
-                                                     out_buf, out_len);
-    if (strcmp(section_name, "ui") == 0)
-        return cd_composer_generate_ui_screen_to_buffer(spec, item_name,
-                                                         out_buf, out_len);
+    if (strcmp(section_name, "mechanics") == 0 && gapi->generate_mechanics_to_buffer)
+        return gapi->generate_mechanics_to_buffer(gapi->userdata, spec, item_name,
+                                                   out_buf, out_len);
+    if (strcmp(section_name, "entities") == 0 && gapi->generate_entity_to_buffer)
+        return gapi->generate_entity_to_buffer(gapi->userdata, spec, item_name,
+                                                out_buf, out_len);
+    if (strcmp(section_name, "levels") == 0 && gapi->generate_level_to_buffer)
+        return gapi->generate_level_to_buffer(gapi->userdata, spec, item_name,
+                                               out_buf, out_len);
+    if (strcmp(section_name, "ui") == 0 && gapi->generate_ui_screen_to_buffer)
+        return gapi->generate_ui_screen_to_buffer(gapi->userdata, spec, item_name,
+                                                   out_buf, out_len);
     return CD_ERR_NOTFOUND;
 }
 
@@ -490,7 +500,8 @@ static void get_multi_item_path(const char* section_name,
  * Diff a multi-file section. Builds a cJSON object with:
  *   { "added": [...], "removed": [...], "modified": [...] }
  */
-static cJSON* diff_multi_file(const cd_gamespec_t* spec,
+static cJSON* diff_multi_file(const cd_gamespec_api_t* gapi,
+                                const cd_gamespec_t* spec,
                                 const char* section_name,
                                 const char* output_dir) {
     cJSON* result = cJSON_CreateObject();
@@ -533,7 +544,7 @@ static cJSON* diff_multi_file(const cd_gamespec_t* spec,
                 /* File exists - generate and compare */
                 char* generated = NULL;
                 size_t gen_len = 0;
-                cd_result_t res = generate_multi_item_to_buffer(
+                cd_result_t res = generate_multi_item_to_buffer(gapi,
                     spec, section_name, item->string,
                     &generated, &gen_len);
 
@@ -576,6 +587,13 @@ static cJSON* cd_mcp_handle_gamespec_diff(
     int*                error_code,
     const char**        error_msg)
 {
+    const cd_gamespec_api_t* gapi = cd_kernel_get_gamespec_api(kernel);
+    if (!gapi || !gapi->load) {
+        *error_code = CD_JSONRPC_INTERNAL_ERROR;
+        *error_msg  = "Gamespec plugin not loaded";
+        return NULL;
+    }
+
     if (params == NULL) {
         *error_code = CD_JSONRPC_INVALID_PARAMS;
         *error_msg  = "Missing parameters";
@@ -631,7 +649,7 @@ static cJSON* cd_mcp_handle_gamespec_diff(
 
     /* Load the game spec */
     cd_gamespec_t spec;
-    cd_result_t load_res = cd_gamespec_load(&spec, resolved_path);
+    cd_result_t load_res = gapi->load(gapi->userdata, &spec, resolved_path);
     if (load_res != CD_OK) {
         *error_code = -32000;
         if (load_res == CD_ERR_IO) {
@@ -669,7 +687,7 @@ static cJSON* cd_mcp_handle_gamespec_diff(
 
         if (g_plan_sections[i].is_multi) {
             /* Multi-file section */
-            cJSON* diff = diff_multi_file(&spec, name, output_dir);
+            cJSON* diff = diff_multi_file(gapi, &spec, name, output_dir);
 
             /* Count added/modified for summary */
             cJSON* added_arr = cJSON_GetObjectItemCaseSensitive(diff, "added");
@@ -700,7 +718,7 @@ static cJSON* cd_mcp_handle_gamespec_diff(
             }
         } else {
             /* Single-file section */
-            const char* status = diff_single_file(&spec, name, output_dir);
+            const char* status = diff_single_file(gapi, &spec, name, output_dir);
 
             cJSON_AddStringToObject(changes, name, status);
             if (strcmp(status, "new") == 0) {
@@ -717,7 +735,7 @@ static cJSON* cd_mcp_handle_gamespec_diff(
     cJSON* result = cJSON_CreateObject();
     if (result == NULL) {
         cJSON_Delete(changes);
-        cd_gamespec_free(&spec);
+        gapi->free(gapi->userdata, &spec);
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg  = "Failed to allocate JSON response";
         return NULL;
@@ -733,7 +751,7 @@ static cJSON* cd_mcp_handle_gamespec_diff(
     cJSON_AddNumberToObject(summary, "removed", summary_removed);
     cJSON_AddItemToObject(result, "summary", summary);
 
-    cd_gamespec_free(&spec);
+    gapi->free(gapi->userdata, &spec);
     return result;
 }
 

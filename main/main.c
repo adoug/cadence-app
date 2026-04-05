@@ -434,10 +434,10 @@ int main(int argc, char* argv[]) {
         /* Dedicated server: auto-host and enter play mode */
         if (engine.config.dedicated_server) {
             const cd_net_ext_api_t* net_api = cd_kernel_get_net_ext_api((cd_kernel_t*)&engine);
-            cd_net_session_t* session = net_api ? (cd_net_session_t*)net_api->get_session(net_api->userdata) : NULL;
-            if (session) {
-                cd_result_t host_res = cd_net_session_host(
-                    session, engine.config.net_port,
+            cd_net_session_t* session = net_api && net_api->get_session ? (cd_net_session_t*)net_api->get_session(net_api->userdata) : NULL;
+            if (session && net_api->session_host) {
+                cd_result_t host_res = net_api->session_host(
+                    net_api->userdata, engine.config.net_port,
                     engine.config.net_max_clients, "Dedicated Server");
                 if (host_res == CD_OK) {
                     session->server_is_dedicated = true;

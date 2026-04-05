@@ -19,7 +19,7 @@
 #include "cadence/cd_kernel.h"
 #include "cadence/cd_kernel_api.h"
 #include "cadence/cd_gamespec.h"
-#include "cadence/cd_composer.h"
+#include "cadence/cd_gamespec_api.h"
 #include "cJSON.h"
 
 #include <stdlib.h>
@@ -36,21 +36,39 @@
 
 typedef struct {
     const char* name;
-    cd_result_t (*generate)(const cd_gamespec_t* spec, const char* output_dir);
     const char* output_path;  /* Single-file generators */
 } cd_compose_section_def_t;
 
 static const cd_compose_section_def_t g_section_defs[CD_COMPOSE_NUM_SECTIONS] = {
-    { "states",      cd_composer_generate_states,      "scripts/game_state_machine.lua" },
-    { "mechanics",   cd_composer_generate_mechanics,   NULL },
-    { "entities",    cd_composer_generate_entities,     NULL },
-    { "levels",      cd_composer_generate_levels,       NULL },
-    { "events",      cd_composer_generate_events,       "scripts/event_system.lua" },
-    { "ui",          cd_composer_generate_ui,           NULL },
-    { "triggers",    cd_composer_generate_triggers,     "scripts/trigger_system.lua" },
-    { "audio",       cd_composer_generate_audio,        "scripts/audio_manager.lua" },
-    { "progression", cd_composer_generate_progression,  "scripts/save_manager.lua" },
+    { "states",      "scripts/game_state_machine.lua" },
+    { "mechanics",   NULL },
+    { "entities",    NULL },
+    { "levels",      NULL },
+    { "events",      "scripts/event_system.lua" },
+    { "ui",          NULL },
+    { "triggers",    "scripts/trigger_system.lua" },
+    { "audio",       "scripts/audio_manager.lua" },
+    { "progression", "scripts/save_manager.lua" },
 };
+
+/** Dispatch a section generation call through the gamespec vtable. */
+static cd_result_t compose_dispatch(const cd_gamespec_api_t* gapi,
+                                     int section_index,
+                                     const cd_gamespec_t* spec,
+                                     const char* output_dir) {
+    switch (section_index) {
+    case 0: return gapi->generate_states     ? gapi->generate_states(gapi->userdata, spec, output_dir)      : CD_ERR_INVALID;
+    case 1: return gapi->generate_mechanics  ? gapi->generate_mechanics(gapi->userdata, spec, output_dir)   : CD_ERR_INVALID;
+    case 2: return gapi->generate_entities   ? gapi->generate_entities(gapi->userdata, spec, output_dir)    : CD_ERR_INVALID;
+    case 3: return gapi->generate_levels     ? gapi->generate_levels(gapi->userdata, spec, output_dir)      : CD_ERR_INVALID;
+    case 4: return gapi->generate_events     ? gapi->generate_events(gapi->userdata, spec, output_dir)      : CD_ERR_INVALID;
+    case 5: return gapi->generate_ui         ? gapi->generate_ui(gapi->userdata, spec, output_dir)          : CD_ERR_INVALID;
+    case 6: return gapi->generate_triggers   ? gapi->generate_triggers(gapi->userdata, spec, output_dir)    : CD_ERR_INVALID;
+    case 7: return gapi->generate_audio      ? gapi->generate_audio(gapi->userdata, spec, output_dir)       : CD_ERR_INVALID;
+    case 8: return gapi->generate_progression? gapi->generate_progression(gapi->userdata, spec, output_dir) : CD_ERR_INVALID;
+    default: return CD_ERR_INVALID;
+    }
+}
 
 /* ============================================================================
  * Helpers
@@ -96,7 +114,7 @@ static void add_generated_multi(cJSON* generated, const char* section_name,
     cJSON* arr = cJSON_CreateArray();
 
     if (strcmp(section_name, "mechanics") == 0) {
-        const cJSON* section = cd_gamespec_get_mechanics(spec);
+        const cJSON* section = spec->mechanics;
         const cJSON* item = NULL;
         cJSON_ArrayForEach(item, section) {
             if (item->string != NULL) {
@@ -107,7 +125,7 @@ static void add_generated_multi(cJSON* generated, const char* section_name,
             }
         }
     } else if (strcmp(section_name, "entities") == 0) {
-        const cJSON* section = cd_gamespec_get_entities(spec);
+        const cJSON* section = spec->entities;
         const cJSON* item = NULL;
         cJSON_ArrayForEach(item, section) {
             if (item->string != NULL) {
@@ -118,7 +136,7 @@ static void add_generated_multi(cJSON* generated, const char* section_name,
             }
         }
     } else if (strcmp(section_name, "levels") == 0) {
-        const cJSON* section = cd_gamespec_get_levels(spec);
+        const cJSON* section = spec->levels;
         const cJSON* item = NULL;
         cJSON_ArrayForEach(item, section) {
             if (item->string != NULL) {
@@ -129,7 +147,7 @@ static void add_generated_multi(cJSON* generated, const char* section_name,
             }
         }
     } else if (strcmp(section_name, "ui") == 0) {
-        const cJSON* section = cd_gamespec_get_ui(spec);
+        const cJSON* section = spec->ui;
         const cJSON* screens = NULL;
         if (section != NULL) {
             screens = cJSON_GetObjectItemCaseSensitive(section, "screens");
@@ -171,6 +189,13 @@ static cJSON* cd_mcp_handle_gamespec_compose(
     int*                error_code,
     const char**        error_msg)
 {
+    const cd_gamespec_api_t* gapi = cd_kernel_get_gamespec_api(kernel);
+    if (!gapi || !gapi->load) {
+        *error_code = CD_JSONRPC_INTERNAL_ERROR;
+        *error_msg  = "Gamespec plugin not loaded";
+        return NULL;
+    }
+
     if (params == NULL) {
         *error_code = CD_JSONRPC_INVALID_PARAMS;
         *error_msg  = "Missing parameters";
@@ -243,7 +268,7 @@ static cJSON* cd_mcp_handle_gamespec_compose(
 
     /* Load the game spec */
     cd_gamespec_t spec;
-    cd_result_t load_res = cd_gamespec_load(&spec, resolved_path);
+    cd_result_t load_res = gapi->load(gapi->userdata, &spec, resolved_path);
     if (load_res != CD_OK) {
         *error_code = -32000;
         if (load_res == CD_ERR_IO) {
@@ -290,7 +315,7 @@ static cJSON* cd_mcp_handle_gamespec_compose(
     for (int i = 0; i < CD_COMPOSE_NUM_SECTIONS; i++) {
         if (!run_section[i]) continue;
 
-        cd_result_t gen_res = g_section_defs[i].generate(&spec, output_dir);
+        cd_result_t gen_res = compose_dispatch(gapi, i, &spec, output_dir);
 
         if (gen_res == CD_OK) {
             /* Add generated file(s) to the response */
@@ -324,8 +349,9 @@ static cJSON* cd_mcp_handle_gamespec_compose(
 
     /* Write composer manifest (Task 15.12) */
     {
-        cd_result_t manifest_res = cd_composer_manifest_write(
-            output_dir, spec_path_item->valuestring, generated);
+        cd_result_t manifest_res = gapi->manifest_write
+            ? gapi->manifest_write(gapi->userdata, output_dir, spec_path_item->valuestring, generated)
+            : CD_ERR_INVALID;
         if (manifest_res != CD_OK && warning_count < CD_COMPOSE_MAX_MESSAGES) {
             snprintf(warnings[warning_count], CD_COMPOSE_MSG_LEN,
                      "Failed to write composer manifest (error %d)",
@@ -336,8 +362,9 @@ static cJSON* cd_mcp_handle_gamespec_compose(
 
     /* Generate project.toml startup manifest (WP-10F) */
     if (!incremental) {
-        cd_result_t project_res = cd_composer_generate_project(
-            &spec, output_dir);
+        cd_result_t project_res = gapi->generate_project
+            ? gapi->generate_project(gapi->userdata, &spec, output_dir)
+            : CD_ERR_INVALID;
         if (project_res == CD_OK) {
             add_generated_single(generated, "project", "project.toml");
         } else if (project_res == CD_ERR_NOTFOUND) {
@@ -360,7 +387,7 @@ static cJSON* cd_mcp_handle_gamespec_compose(
     cJSON* result = cJSON_CreateObject();
     if (result == NULL) {
         cJSON_Delete(generated);
-        cd_gamespec_free(&spec);
+        gapi->free(gapi->userdata, &spec);
         *error_code = CD_JSONRPC_INTERNAL_ERROR;
         *error_msg  = "Failed to allocate JSON response";
         return NULL;
@@ -385,7 +412,7 @@ static cJSON* cd_mcp_handle_gamespec_compose(
     }
     cJSON_AddItemToObject(result, "warnings", warnings_arr);
 
-    cd_gamespec_free(&spec);
+    gapi->free(gapi->userdata, &spec);
     return result;
 }
 
