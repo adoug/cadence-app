@@ -134,11 +134,12 @@ static int cd_mcp_read_stdin_nonblocking(char* buf, int size) {
             return 0;
         }
     } else if (file_type == FILE_TYPE_CHAR) {
-        /* Console input -- use WaitForSingleObject with 0 timeout */
-        DWORD result = WaitForSingleObject(h, 0);
-        if (result != WAIT_OBJECT_0) {
-            return 0;
-        }
+        /* Console input -- check for actual readable input records.
+         * WaitForSingleObject on a console fires for mouse/focus events too,
+         * and ReadFile blocks until Enter. Use PeekConsoleInput to check for
+         * key events, or just skip console entirely (MCP stdio transport is
+         * only meaningful when stdin is a pipe). */
+        return 0;
     } else {
         /* FILE_TYPE_DISK or unknown -- cannot poll, skip */
         return 0;
